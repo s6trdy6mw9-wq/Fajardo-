@@ -1,0 +1,205 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>RITA 3D — Drosera spatulata</title>
+<style>
+html,body{margin:0;height:100%;overflow:hidden;font-family:Arial,sans-serif;background:#dcefe5;color:#183b2b}
+#ui{position:fixed;z-index:5;top:14px;left:14px;width:285px;background:#ffffffdf;backdrop-filter:blur(8px);padding:16px;border-radius:16px;box-shadow:0 8px 30px #173b2b25}
+h2{margin:0 0 6px;font-size:20px}p{font-size:13px;line-height:1.4;margin:7px 0}
+button{width:100%;border:0;border-radius:10px;padding:11px;margin-top:7px;background:#287a52;color:white;font-size:15px;cursor:pointer}
+button.alt{background:#687b72}
+.stat{margin-top:10px;padding:9px;background:#eef6f1;border-radius:10px}
+#growth{height:9px;background:#d5e2db;border-radius:9px;overflow:hidden;margin-top:5px}
+#bar{height:100%;width:0;background:#4eae70;transition:.6s}
+#hint{position:fixed;right:15px;bottom:15px;background:#ffffffcc;padding:9px 12px;border-radius:12px;font-size:12px}
+</style>
+</head>
+<body>
+<div id="ui">
+<h2>🌿 RITA 3D</h2>
+<p>Simulación 3D de un biorreactor tipo RITA con <i>Drosera spatulata</i>.</p>
+<div class="stat">Ciclos: <b id="cycles">0 / 3</b><br>Estado: <span id="state">En reposo</span>
+<div id="growth"><div id="bar"></div></div></div>
+<button id="valve">💨 ACTIVAR VÁLVULA</button>
+<button id="reset" class="alt">↻ Reiniciar</button>
+<p>Arrastra para rotar la cámara. Usa la rueda/pellizco para acercar o alejar.</p>
+</div>
+<div id="hint">La válvula impulsa aire → el agua/sustrato asciende</div>
+
+<script src="https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.min.js"></script>
+<script>
+let scene,camera,renderer,reactor,water,substrate,plant,airGroup,lid;
+let cycles=0,busy=false;
+
+init(); animate();
+
+function init(){
+ scene=new THREE.Scene();
+ scene.background=new THREE.Color(0xdcefe5);
+
+ camera=new THREE.PerspectiveCamera(45,innerWidth/innerHeight,.1,100);
+ camera.position.set(5,4,7);
+ camera.lookAt(0,1.4,0);
+
+ renderer=new THREE.WebGLRenderer({antialias:true});
+ renderer.setSize(innerWidth,innerHeight);
+ renderer.setPixelRatio(Math.min(devicePixelRatio,2));
+ renderer.shadowMap.enabled=true;
+ document.body.appendChild(renderer.domElement);
+
+ const amb=new THREE.HemisphereLight(0xffffff,0x6e927d,2.2); scene.add(amb);
+ const light=new THREE.DirectionalLight(0xffffff,2.5);
+ light.position.set(4,7,5); light.castShadow=true; scene.add(light);
+
+ createReactor();
+
+ let down=false,lastX=0,lastY=0,theta=.6,phi=1.05,r=8;
+ renderer.domElement.addEventListener('pointerdown',e=>{down=true;lastX=e.clientX;lastY=e.clientY});
+ addEventListener('pointerup',()=>down=false);
+ addEventListener('pointermove',e=>{
+   if(!down)return;
+   theta-=(e.clientX-lastX)*.008; phi-=(e.clientY-lastY)*.006;
+   phi=Math.max(.35,Math.min(1.45,phi)); lastX=e.clientX;lastY=e.clientY;
+   camera.position.set(r*Math.sin(phi)*Math.sin(theta),r*Math.cos(phi),r*Math.sin(phi)*Math.cos(theta));
+   camera.lookAt(0,1.5,0);
+ });
+ renderer.domElement.addEventListener('wheel',e=>{
+   r=Math.max(4.5,Math.min(12,r+e.deltaY*.005));
+   camera.position.set(r*Math.sin(phi)*Math.sin(theta),r*Math.cos(phi),r*Math.sin(phi)*Math.cos(theta));
+   camera.lookAt(0,1.5,0);
+ });
+
+ addEventListener('resize',()=>{
+   camera.aspect=innerWidth/innerHeight;camera.updateProjectionMatrix();
+   renderer.setSize(innerWidth,innerHeight);
+ });
+ document.getElementById('valve').onclick=cycle;
+ document.getElementById('reset').onclick=resetSim;
+}
+
+function mat(color,transparent=false,opacity=1,rough=.55){
+ return new THREE.MeshStandardMaterial({color,transparent,opacity,roughness:rough,metalness:.05,side:THREE.DoubleSide});
+}
+
+function createReactor(){
+ reactor=new THREE.Group();scene.add(reactor);
+
+ // Cámara principal: cilindro transparente
+ const body=new THREE.Mesh(new THREE.CylinderGeometry(2.05,2.05,3.2,64,1,true),mat(0xaed8df,true,.25,.15));
+ body.position.y=1.65; reactor.add(body);
+
+ const bottom=new THREE.Mesh(new THREE.CylinderGeometry(2.05,2.05,.18,64),mat(0x759486));
+ bottom.position.y=.08;reactor.add(bottom);
+
+ // Tapa (parte 2)
+ lid=new THREE.Group();
+ const cap=new THREE.Mesh(new THREE.CylinderGeometry(2.18,2.18,.35,64),mat(0x9eafa7));
+ cap.position.y=3.35;lid.add(cap);
+ const neck=new THREE.Mesh(new THREE.CylinderGeometry(1.05,1.05,.42,48),mat(0x8b9e96));
+ neck.position.y=3.72;lid.add(neck);
+ reactor.add(lid);
+
+ // Tubo vertical de aire
+ const tube=new THREE.Mesh(new THREE.CylinderGeometry(.13,.13,2.0,24),mat(0x526d61));
+ tube.position.set(-.95,1.0,0);reactor.add(tube);
+ const nozzle=new THREE.Mesh(new THREE.CylinderGeometry(.18,.18,.22,24),mat(0x526d61));
+ nozzle.position.set(-.95,.08,0);reactor.add(nozzle);
+
+ // Válvula
+ const valve=new THREE.Group();
+ const knob=new THREE.Mesh(new THREE.BoxGeometry(.55,.18,.18),mat(0x287a52));
+ knob.position.set(-1.55,-.02,.0);valve.add(knob);
+ const stem=new THREE.Mesh(new THREE.CylinderGeometry(.08,.08,.45,16),mat(0x41574e));
+ stem.rotation.z=Math.PI/2;stem.position.set(-1.28,.05,0);valve.add(stem);
+ reactor.add(valve);
+
+ // Agua
+ water=new THREE.Mesh(new THREE.CylinderGeometry(1.96,1.96,1.25,64),mat(0x56b9df,true,.55,.1));
+ water.position.y=.72;reactor.add(water);
+
+ // Sustrato elevado
+ substrate=new THREE.Mesh(new THREE.CylinderGeometry(1.65,1.65,.42,48),mat(0x896543));
+ substrate.position.y=1.28;reactor.add(substrate);
+
+ // Canastilla
+ const basket=new THREE.Mesh(new THREE.CylinderGeometry(1.05,1.05,.38,32,1,true),mat(0xc9d3cc,true,.75));
+ basket.position.y=1.52;reactor.add(basket);
+
+ createPlant();
+ airGroup=new THREE.Group();reactor.add(airGroup);
+}
+
+function createPlant(){
+ plant=new THREE.Group();reactor.add(plant);
+ plant.position.y=1.68;
+ const center=new THREE.Mesh(new THREE.SphereGeometry(.13,20,12),mat(0x6e9d61));
+ plant.add(center);
+ for(let i=0;i<12;i++){
+   const a=i*Math.PI*2/12;
+   const leaf=new THREE.Mesh(new THREE.SphereGeometry(.42,16,10),mat(i%2?0x75b86d:0x68a961));
+   leaf.scale.set(.65,.16,1.65);
+   leaf.position.set(Math.cos(a)*.28,.02,Math.sin(a)*.28);
+   leaf.rotation.y=-a;
+   leaf.rotation.z=.12*Math.cos(a);
+   plant.add(leaf);
+   // tentáculos/gotas visuales
+   const dot=new THREE.Mesh(new THREE.SphereGeometry(.025,8,8),mat(0xf08b9d));
+   dot.position.set(Math.cos(a)*.45,.08,Math.sin(a)*.45);plant.add(dot);
+ }
+}
+
+function bubble(){
+ const b=new THREE.Mesh(new THREE.SphereGeometry(.055,10,10),mat(0xffffff,true,.75));
+ b.position.set(-.95,.25+(Math.random()*.15), (Math.random()-.5)*1.2);
+ b.userData.v=.025+Math.random()*.025;
+ airGroup.add(b);
+ setTimeout(()=>airGroup.remove(b),1700);
+}
+
+function cycle(){
+ if(busy||cycles>=3)return;
+ busy=true;cycles++;
+ document.getElementById('cycles').textContent=cycles+' / 3';
+ document.getElementById('state').textContent='Aire entrando…';
+
+ for(let i=0;i<22;i++)setTimeout(bubble,i*35);
+
+ const start=performance.now(),duration=850;
+ function move(t){
+   const p=Math.min(1,(t-start)/duration),e=Math.sin(p*Math.PI);
+   water.position.y=.72+.48*e;
+   substrate.position.y=1.28+.75*e;
+   plant.position.y=1.68+.75*e;
+   if(p<1)requestAnimationFrame(move);
+   else{
+     water.position.y=.72;substrate.position.y=1.28;plant.position.y=1.68;
+     document.getElementById('bar').style.width=(cycles*33.333)+'%';
+     if(cycles===3){
+       plant.scale.set(1.45,1.45,1.45);
+       document.getElementById('state').textContent='Crecimiento visible 🌱';
+     }else document.getElementById('state').textContent='Ciclo completado';
+     busy=false;
+   }
+ }
+ requestAnimationFrame(move);
+}
+
+function resetSim(){
+ cycles=0;busy=false;
+ document.getElementById('cycles').textContent='0 / 3';
+ document.getElementById('state').textContent='En reposo';
+ document.getElementById('bar').style.width='0%';
+ water.position.y=.72;substrate.position.y=1.28;plant.position.y=1.68;
+ plant.scale.set(1,1,1);airGroup.clear();
+}
+
+function animate(){
+ requestAnimationFrame(animate);
+ airGroup.children.forEach(b=>{b.position.y+=b.userData.v;b.scale.multiplyScalar(1.008)});
+ renderer.render(scene,camera);
+}
+</script>
+</body>
+</html>
